@@ -57,6 +57,18 @@ jobs:
           docker build -t "${{ env.IMAGE }}" .
           docker push "${{ env.IMAGE }}"
 
+      - name: Configure ACR registry auth on Container App
+        run: |
+          SHARED_MI_ID=$(az identity show \
+            --name "id-sdlc-shared-${{ env.ENV_LOWER }}" \
+            --resource-group "rg-sdlc-shared-${{ env.ENV_LOWER }}" \
+            --query id -o tsv)
+          az containerapp registry set \
+            --name "${{ env.CONTAINER_APP }}" \
+            --resource-group "${{ env.RESOURCE_GROUP }}" \
+            --server "${{ env.ACR_SERVER }}" \
+            --identity "$SHARED_MI_ID"
+
       - name: Deploy to Container App
         run: |
           az containerapp update \
