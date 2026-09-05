@@ -14,6 +14,8 @@ All nodes must exist before any edge can reference them.
 Node ID and edge ID follow the naming convention:
     {resource_code}:{github_org}:{project}:{repo}:{file}:{symbol}
 """
+import base64
+
 from app.services.cosmos import (
     upsert_node,
     upsert_edge,
@@ -26,13 +28,18 @@ def _build_id(
     resource_code: str, github_org: str, project: str, repo: str, file_path: str, *parts: str
 ) -> str:
     """
-    Build a unique stable ID following the naming convention.
-    Cosmos DB IDs cannot contain '/' so we replace '/' with '__'.
-    ':' is allowed in Cosmos DB IDs.
-    Example: b310545b:sdlc-tenant:ecommerce:cart-service:cart__main.py:add_to_cart
+    Build a unique stable Cosmos DB document ID.
+    URL-safe base64 — avoids '/', '?', '#', '\\' which are illegal in Cosmos IDs.
+    Filtering is done via separate metadata fields, not by parsing the ID.
     """
-    safe_file = file_path.replace("/", "__")
-    return ":".join([resource_code, github_org, project, repo, safe_file] + list(parts))
+    compound = ":".join([resource_code, github_org, project, repo, file_path] + list(parts))
+    return base64.urlsafe_b64encode(compound.encode()).decode().rstrip("=")
+
+
+def _build_edge_id(source_id: str, relationship: str, target: str) -> str:
+    """Build a stable Cosmos DB edge ID (safe characters only)."""
+    compound = f"{source_id}|{relationship}|{target}"
+    return base64.urlsafe_b64encode(compound.encode()).decode().rstrip("=")
 
 
 async def _upsert_file_node(
@@ -137,7 +144,7 @@ async def _upsert_class_and_methods(
         node_ids.append(method_id)
 
         # HAS_METHOD edge — Class → Method
-        edge_id = f"{class_id}:HAS_METHOD:{method_id}"
+        edge_id = _build_edge_id(class_id, "HAS_METHOD", method_id)
         await upsert_edge({
             "id":            edge_id,
             "resource_code": resource_code,
@@ -209,7 +216,7 @@ async def load_edges(
             continue
 
         source_id = _build_id(resource_code, github_org, project, repo, file_path)
-        edge_id   = f"{source_id}:IMPORTS:{module}"
+        edge_id   = _build_edge_id(source_id, "IMPORTS", module)
 
         await upsert_edge({
             "id":            edge_id,
@@ -231,7 +238,7 @@ async def load_edges(
 
     for item, caller_id in all_callables:
         for called_name in item.get("calls", []):
-            edge_id = f"{caller_id}:CALLS:{called_name}"
+            edge_id = _build_edge_id(caller_id, "CALLS", called_name)
             await upsert_edge({
                 "id":           edge_id,
                 "resource_code": resource_code,

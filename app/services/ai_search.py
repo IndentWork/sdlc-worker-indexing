@@ -4,17 +4,15 @@ Azure AI Search service — upserts and deletes code chunks.
 Replaces ChromaDB from the prototype. Same chunking logic, different backend.
 
 Each chunk represents one function, class, or method extracted by the crawler.
-The chunk_id follows the naming convention:
-    {resource_code}:{github_org}:{project}:{repo}:{file}:{symbol}
+No chunk_id field is stored — filtering is done via metadata fields only:
+    resource_code, github_org, project, repo, file, type, name, class_name
 
-AI Search document keys only allow letters, digits, _, -, =.
-We encode the chunk_id for the key field:
-    ':' → '='
-    '/' → '=='
-The original chunk_id is stored as a separate filterable field.
+Document key (doc_key) is base64 URL-safe encoded from the compound path.
+Base64 URL-safe uses only [A-Za-z0-9-_] — all valid AI Search key characters.
 
 Authentication uses DefaultAzureCredential (Managed Identity in Azure).
 """
+import base64
 import os
 
 from azure.identity.aio import DefaultAzureCredential
@@ -42,18 +40,21 @@ def _endpoint() -> str:
     return f"https://srch-sdlc-{scope}-{env}.search.windows.net"
 
 
-def encode_key(chunk_id: str) -> str:
+def build_doc_key(
+    resource_code: str, github_org: str, project: str, repo: str, file_path: str, *parts: str
+) -> str:
     """
-    Encode chunk_id as a valid AI Search document key.
-    AI Search keys only allow: letters, digits, _, -, =
-    ':' → '='  and  '/' → '=='
+    Build the AI Search document key from the compound path.
+    URL-safe base64 encoding — uses only [A-Za-z0-9-_] which are all valid.
+    The '=' padding is stripped and re-added when decoding.
+
+    Example inputs:
+      b310545b, sdlc-tenant, ecommerce, cart-service, cart/main.py, add_to_cart
+    Produces something like:
+      YjMxMDU0NWI6c2RsYy10ZW5hbnQ6ZWNvbW1lcmNlOmNhcnQtc2VydmljZTpjYXJ0L21haW4ucHk6YWRkX3RvX2NhcnQ
     """
-    return chunk_id.replace("/", "==").replace(":", "=")
-
-
-def decode_key(key: str) -> str:
-    """Reverse encode_key — used when retrieving chunk_ids from AI Search."""
-    return key.replace("==", "/").replace("=", ":")
+    compound = ":".join([resource_code, github_org, project, repo, file_path] + list(parts))
+    return base64.urlsafe_b64encode(compound.encode()).decode().rstrip("=")
 
 
 async def ensure_index_exists() -> None:
@@ -71,10 +72,10 @@ async def ensure_index_exists() -> None:
         index = SearchIndex(
             name=INDEX_NAME,
             fields=[
-                # key: encoded chunk_id — AI Search document identifier
+                # doc_key: opaque base64-encoded AI Search document identifier
                 SimpleField(name="doc_key",        type=SearchFieldDataType.String, key=True),
-                # chunk_id: original human-readable ID for filtering
-                SimpleField(name="chunk_id",      type=SearchFieldDataType.String, filterable=True),
+
+                # metadata fields — all used for filtering
                 SimpleField(name="resource_code", type=SearchFieldDataType.String, filterable=True),
                 SimpleField(name="github_org",    type=SearchFieldDataType.String, filterable=True),
                 SimpleField(name="project",       type=SearchFieldDataType.String, filterable=True),
@@ -82,8 +83,13 @@ async def ensure_index_exists() -> None:
                 SimpleField(name="file",          type=SearchFieldDataType.String, filterable=True),
                 SimpleField(name="type",          type=SearchFieldDataType.String, filterable=True),
                 SimpleField(name="name",          type=SearchFieldDataType.String, filterable=True),
+                SimpleField(name="class_name",    type=SearchFieldDataType.String, filterable=True),
                 SimpleField(name="sha",           type=SearchFieldDataType.String),
+
+                # searchable text — for BM25 keyword search
                 SearchableField(name="content",   type=SearchFieldDataType.String),
+
+                # vector field — for semantic search (populated when OpenAI is wired in)
                 VectorField(
                     name="content_vector",
                     type=SearchFieldDataType.Collection(SearchFieldDataType.Single),
@@ -104,41 +110,34 @@ async def ensure_index_exists() -> None:
 async def upsert_chunk(chunk: dict) -> None:
     """
     Upsert a single chunk document into AI Search.
-
-    chunk must contain: chunk_id, resource_code, github_org, project,
+    chunk must contain: doc_key, resource_code, github_org, project,
     repo, file, type, name, sha, content.
-    The 'key' field is auto-set from chunk_id using encode_key().
     """
     credential = DefaultAzureCredential()
 
-    # set the encoded doc_key from the original chunk_id
-    doc = {"doc_key": encode_key(chunk["chunk_id"]), **chunk}
-
     async with SearchClient(_endpoint(), INDEX_NAME, credential) as client:
-        await client.upload_documents(documents=[doc])
+        await client.upload_documents(documents=[chunk])
 
 
-async def delete_chunks(chunk_ids: list[str]) -> None:
+async def delete_chunks(doc_keys: list[str]) -> None:
     """
-    Delete chunks by ID — called when functions/classes are removed from source.
+    Delete chunks by doc_key — called when functions/classes are removed from source.
     Keeps the index clean — no stale chunks from deleted code.
     """
-    if not chunk_ids:
+    if not doc_keys:
         return
 
     credential = DefaultAzureCredential()
-    # delete by encoded doc_key
-    documents = [{"doc_key": encode_key(cid)} for cid in chunk_ids]
+    documents = [{"doc_key": k} for k in doc_keys]
 
     async with SearchClient(_endpoint(), INDEX_NAME, credential) as client:
         await client.delete_documents(documents=documents)
 
 
-async def get_chunk_ids_for_file(resource_code: str, repo: str, file_path: str) -> list[str]:
+async def get_doc_keys_for_file(resource_code: str, repo: str, file_path: str) -> list[str]:
     """
-    Return all chunk IDs currently indexed for a given file.
+    Return all doc_keys currently indexed for a given file.
     Used to detect stale chunks when a file is re-crawled.
-    Returns original chunk_ids (not encoded keys).
     """
     credential = DefaultAzureCredential()
     filter_expr = (
@@ -151,7 +150,7 @@ async def get_chunk_ids_for_file(resource_code: str, repo: str, file_path: str) 
         results = await client.search(
             search_text="*",
             filter=filter_expr,
-            select=["chunk_id"],
+            select=["doc_key"],
             top=1000,
         )
-        return [r["chunk_id"] async for r in results]
+        return [r["doc_key"] async for r in results]

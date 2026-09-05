@@ -4,15 +4,25 @@ Chunker — converts crawler output into text chunks and upserts to Azure AI Sea
 Adapted from chunkers/python_chunker.py in the prototype.
 Only change: ChromaDB replaced with Azure AI Search (ai_search.py).
 
-Chunk ID follows the naming convention:
-    {resource_code}:{github_org}:{project}:{repo}:{file}:{symbol}
+Each chunk stored with:
+  doc_key       — opaque base64-encoded document identifier
+  metadata      — resource_code, github_org, project, repo, file, type, name, class_name
+  content       — searchable text with signature + docstring + code
+
+Filtering by metadata fields (not by parsing an ID):
+  filter = "resource_code eq 'x' and repo eq 'y' and type eq 'function'"
 
 Incremental update logic:
-  1. Get existing chunk IDs for this file from AI Search
-  2. Upsert new chunks
-  3. Delete stale chunk IDs (functions/classes that no longer exist)
+  1. Get existing doc_keys for this file from AI Search
+  2. Upsert new chunks (track new doc_keys)
+  3. Delete stale doc_keys (functions/classes that no longer exist)
 """
-from app.services.ai_search import upsert_chunk, delete_chunks, get_chunk_ids_for_file
+from app.services.ai_search import (
+    build_doc_key,
+    delete_chunks,
+    get_doc_keys_for_file,
+    upsert_chunk,
+)
 
 MAX_CHUNK_TOKENS = 400
 
@@ -23,10 +33,7 @@ def _count_tokens(text: str) -> int:
 
 
 def _split_by_lines(text: str, max_tokens: int) -> list[str]:
-    """
-    Split a long text into chunks by line boundaries.
-    Each chunk stays within max_tokens.
-    """
+    """Split long text into chunks by line boundaries within max_tokens."""
     lines = text.split("\n")
     chunks, current, count = [], [], 0
 
@@ -43,16 +50,6 @@ def _split_by_lines(text: str, max_tokens: int) -> list[str]:
         chunks.append("\n".join(current))
 
     return chunks
-
-
-def _build_chunk_id(
-    resource_code: str, github_org: str, project: str, repo: str, file_path: str, *parts: str
-) -> str:
-    """
-    Build chunk ID following the naming convention.
-    Example: b310545b:sdlc-tenant:ecommerce:cart-service:cart.py:add_to_cart
-    """
-    return ":".join([resource_code, github_org, project, repo, file_path] + list(parts))
 
 
 def _build_function_text(func: dict, file_path: str) -> str:
@@ -113,24 +110,33 @@ def _base_metadata(
     }
 
 
+async def _upsert_one_chunk(
+    doc_key: str, text: str, metadata: dict, new_keys: set,
+) -> None:
+    """Upsert a single chunk document to AI Search."""
+    doc = {"doc_key": doc_key, "content": text, **metadata}
+    await upsert_chunk(doc)
+    new_keys.add(doc_key)
+
+
 async def _upsert_chunks_for_text(
-    chunk_id: str, text: str, metadata: dict, new_ids: set
+    resource_code: str, github_org: str, project: str, repo: str,
+    file_path: str, symbol_parts: list[str], text: str, metadata: dict, new_keys: set,
 ) -> None:
     """
-    Upsert one or more chunks for a piece of code.
-    Splits into multiple chunks if text exceeds MAX_CHUNK_TOKENS.
+    Upsert one chunk if text fits, otherwise split into multiple chunks.
+    Each split part gets its own doc_key with a suffix.
     """
     if _count_tokens(text) <= MAX_CHUNK_TOKENS:
-        doc = {"chunk_id": chunk_id, "content": text, **metadata}
-        await upsert_chunk(doc)
-        new_ids.add(chunk_id)
-    else:
-        parts = _split_by_lines(text, MAX_CHUNK_TOKENS)
-        for i, part in enumerate(parts, start=1):
-            part_id = f"{chunk_id}:{i}_of_{len(parts)}"
-            doc = {"chunk_id": part_id, "content": part, **metadata}
-            await upsert_chunk(doc)
-            new_ids.add(part_id)
+        doc_key = build_doc_key(resource_code, github_org, project, repo, file_path, *symbol_parts)
+        await _upsert_one_chunk(doc_key, text, metadata, new_keys)
+        return
+
+    parts = _split_by_lines(text, MAX_CHUNK_TOKENS)
+    for i, part in enumerate(parts, start=1):
+        suffix = f"{i}_of_{len(parts)}"
+        doc_key = build_doc_key(resource_code, github_org, project, repo, file_path, *symbol_parts, suffix)
+        await _upsert_one_chunk(doc_key, part, metadata, new_keys)
 
 
 async def chunk_file(
@@ -143,52 +149,48 @@ async def chunk_file(
     """
     Process one crawl result and upsert all its chunks to AI Search.
     Deletes stale chunks for functions/classes removed from the file.
-
-    Returns a summary dict with counts of chunks upserted and deleted.
+    Returns summary with counts of chunks upserted and deleted.
     """
     file_path = crawl_result["path"]
     sha       = crawl_result.get("sha", "")
 
     base = _base_metadata(resource_code, github_org, project, repo, file_path, sha)
 
-    # get existing chunk IDs before upserting — needed for stale detection
-    existing_ids = set(await get_chunk_ids_for_file(resource_code, repo, file_path))
-    new_ids: set = set()
+    # get existing doc_keys before upserting — needed for stale detection
+    existing_keys = set(await get_doc_keys_for_file(resource_code, repo, file_path))
+    new_keys: set = set()
 
     # chunk standalone functions
     for func in crawl_result.get("functions", []):
-        chunk_id = _build_chunk_id(resource_code, github_org, project, repo, file_path, func["name"])
-        text     = _build_function_text(func, file_path)
         metadata = {**base, "type": "function", "name": func["name"]}
-        await _upsert_chunks_for_text(chunk_id, text, metadata, new_ids)
+        text     = _build_function_text(func, file_path)
+        await _upsert_chunks_for_text(
+            resource_code, github_org, project, repo, file_path,
+            [func["name"]], text, metadata, new_keys,
+        )
 
     # chunk classes and their methods
     for cls in crawl_result.get("classes", []):
-        class_id = _build_chunk_id(resource_code, github_org, project, repo, file_path, cls["name"])
+        metadata = {**base, "type": "class", "name": cls["name"]}
         await _upsert_chunks_for_text(
-            class_id,
-            _build_class_text(cls, file_path),
-            {**base, "type": "class", "name": cls["name"]},
-            new_ids,
+            resource_code, github_org, project, repo, file_path,
+            [cls["name"]], _build_class_text(cls, file_path), metadata, new_keys,
         )
 
         for method in cls.get("methods", []):
-            method_id = _build_chunk_id(
-                resource_code, github_org, project, repo, file_path, cls["name"], method["name"]
-            )
+            metadata = {**base, "type": "method", "name": method["name"], "class_name": cls["name"]}
             await _upsert_chunks_for_text(
-                method_id,
-                _build_method_text(method, cls["name"], file_path),
-                {**base, "type": "method", "name": method["name"], "class_name": cls["name"]},
-                new_ids,
+                resource_code, github_org, project, repo, file_path,
+                [cls["name"], method["name"]], _build_method_text(method, cls["name"], file_path),
+                metadata, new_keys,
             )
 
     # delete stale chunks — functions/classes removed from source
-    stale_ids = list(existing_ids - new_ids)
-    await delete_chunks(stale_ids)
+    stale_keys = list(existing_keys - new_keys)
+    await delete_chunks(stale_keys)
 
     return {
-        "file":    file_path,
-        "upserted": len(new_ids),
-        "deleted":  len(stale_ids),
+        "file":     file_path,
+        "upserted": len(new_keys),
+        "deleted":  len(stale_keys),
     }
