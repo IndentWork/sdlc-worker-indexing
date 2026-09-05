@@ -1,0 +1,65 @@
+name: Deploy sdlc-worker-indexing
+
+on:
+  workflow_dispatch:
+    inputs:
+      env:
+        description: "Environment to deploy to"
+        required: true
+        type: choice
+        options:
+          - DEV
+          - PROD
+
+jobs:
+  deploy:
+    name: "Deploy → ${{ inputs.env }}"
+    runs-on: ubuntu-latest
+
+    env:
+      ARM_CLIENT_ID:       ${{ secrets[format('SDLC_{0}_AZURE_CLIENT_ID_TERRAFORM', inputs.env)] }}
+      ARM_CLIENT_SECRET:   ${{ secrets[format('SDLC_{0}_AZURE_CLIENT_SECRET_TERRAFORM', inputs.env)] }}
+      ARM_TENANT_ID:       ${{ secrets[format('SDLC_{0}_AZURE_TENANT_ID_TERRAFORM', inputs.env)] }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets[format('SDLC_{0}_AZURE_SUBSCRIPTION_ID_TERRAFORM', inputs.env)] }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set build metadata
+        run: |
+          ENV_LOWER=$(echo '${{ inputs.env }}' | tr '[:upper:]' '[:lower:]')
+          echo "ENV_LOWER=$ENV_LOWER"                              >> $GITHUB_ENV
+          echo "SHORT_SHA=$(echo '${{ github.sha }}' | cut -c1-7)" >> $GITHUB_ENV
+
+      - name: Set resource names
+        run: |
+          echo "ACR_NAME=crsdlc${{ env.ENV_LOWER }}"              >> $GITHUB_ENV
+          echo "ACR_SERVER=crsdlc${{ env.ENV_LOWER }}.azurecr.io" >> $GITHUB_ENV
+          echo "CONTAINER_APP=ca-sdlc-indexing-${{ env.ENV_LOWER }}" >> $GITHUB_ENV
+          echo "RESOURCE_GROUP=rg-sdlc-base-${{ env.ENV_LOWER }}" >> $GITHUB_ENV
+
+      - name: Set image tag
+        run: |
+          IMAGE="${{ env.ACR_SERVER }}/sdlc-worker-indexing:${{ env.SHORT_SHA }}"
+          echo "IMAGE=$IMAGE" >> $GITHUB_ENV
+
+      - name: Azure Login
+        run: |
+          az login --service-principal \
+            --username "$ARM_CLIENT_ID" \
+            --password "$ARM_CLIENT_SECRET" \
+            --tenant  "$ARM_TENANT_ID"
+          az account set --subscription "$ARM_SUBSCRIPTION_ID"
+
+      - name: Build and push image to ACR
+        run: |
+          az acr login --name "${{ env.ACR_NAME }}"
+          docker build -t "${{ env.IMAGE }}" .
+          docker push "${{ env.IMAGE }}"
+
+      - name: Deploy to Container App
+        run: |
+          az containerapp update \
+            --name "${{ env.CONTAINER_APP }}" \
+            --resource-group "${{ env.RESOURCE_GROUP }}" \
+            --image "${{ env.IMAGE }}"
