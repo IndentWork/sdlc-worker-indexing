@@ -47,7 +47,7 @@ from app.services.storage import (
 
 TOPIC_NAME        = "sdlc-events"
 SUBSCRIPTION_NAME = "indexing"
-SQL_FILTER        = "action = 'upload_sdlc'"
+SQL_FILTER        = "action = 'index_repos'"
 
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -176,18 +176,15 @@ async def _run_indexing_pipeline(payload: dict) -> None:
     resource_code = payload["resource_code"]
     tier          = payload["tier"]
 
-    # read sdlc.yml from Storage
-    from app.services.storage import load_file_checkpoint as _load
-    from azure.identity.aio import DefaultAzureCredential as _Cred
+    # read sdlc.yml from Storage — uploaded by the upload-sdlc workflow beforehand
     from azure.storage.blob.aio import BlobServiceClient as _BlobClient
 
-    env = os.environ.get("ENV", "dev")
+    env     = os.environ.get("ENV", "dev")
     account = f"stsdlcshared{env}" if tier == "shared" else f"stsdlc{resource_code}{env}"
     url     = f"https://{account}.blob.core.windows.net"
 
-    cred = DefaultAzureCredential()
-    async with _BlobClient(url, cred) as blob_client:
-        blob = blob_client.get_blob_client("configs", f"{resource_code}/sdlc.yml")
+    async with _BlobClient(url, DefaultAzureCredential()) as blob_client:
+        blob    = blob_client.get_blob_client("configs", f"{resource_code}/sdlc.yml")
         stream  = await blob.download_blob()
         content = await stream.readall()
 
