@@ -177,14 +177,16 @@ async def _run_indexing_pipeline(payload: dict) -> None:
     tier          = payload["tier"]
 
     # read sdlc.yml from Storage — uploaded by the upload-sdlc workflow beforehand
+    # path: sdlc/{resource_code}/{github_org}/sdlc.yml
     from azure.storage.blob.aio import BlobServiceClient as _BlobClient
 
-    env     = os.environ.get("ENV", "dev")
-    account = f"stsdlcshared{env}" if tier == "shared" else f"stsdlc{resource_code}{env}"
-    url     = f"https://{account}.blob.core.windows.net"
+    github_org = payload.get("github_org", "")
+    env        = os.environ.get("ENV", "dev")
+    account    = f"stsdlcshared{env}" if tier == "shared" else f"stsdlc{resource_code}{env}"
+    url        = f"https://{account}.blob.core.windows.net"
 
     async with _BlobClient(url, DefaultAzureCredential()) as blob_client:
-        blob    = blob_client.get_blob_client("configs", f"{resource_code}/sdlc.yml")
+        blob    = blob_client.get_blob_client("sdlc", f"{resource_code}/{github_org}/sdlc.yml")
         stream  = await blob.download_blob()
         content = await stream.readall()
 
