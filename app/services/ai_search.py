@@ -7,6 +7,12 @@ Each chunk represents one function, class, or method extracted by the crawler.
 The chunk_id follows the naming convention:
     {resource_code}:{github_org}:{project}:{repo}:{file}:{symbol}
 
+AI Search document keys only allow letters, digits, _, -, =.
+We encode the chunk_id for the key field:
+    ':' → '='
+    '/' → '=='
+The original chunk_id is stored as a separate filterable field.
+
 Authentication uses DefaultAzureCredential (Managed Identity in Azure).
 """
 import os
@@ -16,7 +22,6 @@ from azure.search.documents.aio import SearchClient
 from azure.search.documents.indexes.aio import SearchIndexClient
 from azure.search.documents.indexes.models import (
     SearchIndex,
-    SearchField,
     SearchFieldDataType,
     SimpleField,
     SearchableField,
@@ -37,6 +42,20 @@ def _endpoint() -> str:
     return f"https://srch-sdlc-{scope}-{env}.search.windows.net"
 
 
+def encode_key(chunk_id: str) -> str:
+    """
+    Encode chunk_id as a valid AI Search document key.
+    AI Search keys only allow: letters, digits, _, -, =
+    ':' → '='  and  '/' → '=='
+    """
+    return chunk_id.replace("/", "==").replace(":", "=")
+
+
+def decode_key(key: str) -> str:
+    """Reverse encode_key — used when retrieving chunk_ids from AI Search."""
+    return key.replace("==", "/").replace("=", ":")
+
+
 async def ensure_index_exists() -> None:
     """
     Create the code-chunks index if it does not already exist.
@@ -52,7 +71,10 @@ async def ensure_index_exists() -> None:
         index = SearchIndex(
             name=INDEX_NAME,
             fields=[
-                SimpleField(name="chunk_id",      type=SearchFieldDataType.String, key=True),
+                # key: encoded chunk_id — AI Search document identifier
+                SimpleField(name="key",           type=SearchFieldDataType.String, key=True),
+                # chunk_id: original human-readable ID for filtering
+                SimpleField(name="chunk_id",      type=SearchFieldDataType.String, filterable=True),
                 SimpleField(name="resource_code", type=SearchFieldDataType.String, filterable=True),
                 SimpleField(name="github_org",    type=SearchFieldDataType.String, filterable=True),
                 SimpleField(name="project",       type=SearchFieldDataType.String, filterable=True),
@@ -85,14 +107,15 @@ async def upsert_chunk(chunk: dict) -> None:
 
     chunk must contain: chunk_id, resource_code, github_org, project,
     repo, file, type, name, sha, content.
-    content_vector is optional — added later when OpenAI is wired in.
+    The 'key' field is auto-set from chunk_id using encode_key().
     """
     credential = DefaultAzureCredential()
 
+    # set the encoded key from the original chunk_id
+    doc = {"key": encode_key(chunk["chunk_id"]), **chunk}
+
     async with SearchClient(_endpoint(), INDEX_NAME, credential) as client:
-        # allowUnsafeKeys=True allows chunk_id to contain ':' and '/' characters
-        # which are part of our naming convention: {resource_code}:{org}:{project}:...
-        await client.upload_documents(documents=[chunk], allowUnsafeKeys=True)
+        await client.upload_documents(documents=[doc])
 
 
 async def delete_chunks(chunk_ids: list[str]) -> None:
@@ -104,7 +127,8 @@ async def delete_chunks(chunk_ids: list[str]) -> None:
         return
 
     credential = DefaultAzureCredential()
-    documents = [{"chunk_id": cid} for cid in chunk_ids]
+    # delete by encoded key
+    documents = [{"key": encode_key(cid)} for cid in chunk_ids]
 
     async with SearchClient(_endpoint(), INDEX_NAME, credential) as client:
         await client.delete_documents(documents=documents)
@@ -114,6 +138,7 @@ async def get_chunk_ids_for_file(resource_code: str, repo: str, file_path: str) 
     """
     Return all chunk IDs currently indexed for a given file.
     Used to detect stale chunks when a file is re-crawled.
+    Returns original chunk_ids (not encoded keys).
     """
     credential = DefaultAzureCredential()
     filter_expr = (
