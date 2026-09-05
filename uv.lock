@@ -140,6 +140,19 @@ wheels = [
 ]
 
 [[package]]
+name = "azure-cosmos"
+version = "4.16.4"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "azure-core" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/6d/8a/97b68e849fff7d2a76d85e51acdfbd13072266d581dcb7f6ad32bdddbd27/azure_cosmos-4.16.4.tar.gz", hash = "sha256:5a98d33ce6d539a926f47c67b14587fbb8ba4fd662751ff8b0ebe7f9d3765a2e", size = 2462258, upload-time = "2026-09-02T14:59:54.322Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e0/cc/5f4b06f49ec0bf26e8a390fb55c67ceb67573e94e83493b6b96837b2ee98/azure_cosmos-4.16.4-py3-none-any.whl", hash = "sha256:89bf558203335efc39551dccef6782aa2f286d94cc87dd9bd98efc37d8c69303", size = 502464, upload-time = "2026-09-02T14:59:56.414Z" },
+]
+
+[[package]]
 name = "azure-identity"
 version = "1.25.3"
 source = { registry = "https://pypi.org/simple" }
@@ -167,6 +180,20 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/15/d5/41043abed42ca3ab6930c52a25956a8eb468af2db0acb5ce446ff5437ddc/azure_keyvault_secrets-4.11.2.tar.gz", hash = "sha256:c0d86db01a8ae34d1db92ec6b9ef92d9a2aef7fbb1a67c0956513d46b85d7adb", size = 116119, upload-time = "2026-08-25T21:55:39.774Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/cb/7a/dbdaf5f11b5a410fd29be4ac544880ff970ac09de7274f141801c90e179e/azure_keyvault_secrets-4.11.2-py3-none-any.whl", hash = "sha256:7abdd4a830bd8f4998bea0edbe69b8a772d672c17eabfdf3f77d8e4ef29442e9", size = 103809, upload-time = "2026-08-25T21:55:41.372Z" },
+]
+
+[[package]]
+name = "azure-search-documents"
+version = "12.0.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "azure-core" },
+    { name = "isodate" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/59/dc/bb4db263381aa5b29414e280a8535a343d877a3831a501ef39332174c85c/azure_search_documents-12.0.0.tar.gz", hash = "sha256:8e6d73ec0ed1623083435b757e34324db65d72d4e09cca061a59fc7e90c8ddbc", size = 386222, upload-time = "2026-05-01T20:28:22.269Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a4/b1/4869a064dbb79fb4ecac684de51a8f8f7a93a315f3f9cc4bf8a65cc413cd/azure_search_documents-12.0.0-py3-none-any.whl", hash = "sha256:d88114e4179cd753845711042380a4571e7faa8619addf5e017928ebe37fc0d1", size = 352117, upload-time = "2026-05-01T20:28:23.989Z" },
 ]
 
 [[package]]
@@ -837,8 +864,10 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "aiohttp" },
+    { name = "azure-cosmos" },
     { name = "azure-identity" },
     { name = "azure-keyvault-secrets" },
+    { name = "azure-search-documents" },
     { name = "azure-servicebus" },
     { name = "azure-storage-blob" },
     { name = "httpx" },
@@ -849,8 +878,10 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.11.0" },
+    { name = "azure-cosmos", specifier = ">=4.9.0" },
     { name = "azure-identity", specifier = ">=1.25.3" },
     { name = "azure-keyvault-secrets", specifier = ">=4.9.0" },
+    { name = "azure-search-documents", specifier = ">=11.6.0" },
     { name = "azure-servicebus", specifier = ">=7.14.2" },
     { name = "azure-storage-blob", specifier = ">=12.25.1" },
     { name = "httpx", specifier = ">=0.28.0" },
