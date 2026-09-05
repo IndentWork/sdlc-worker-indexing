@@ -135,10 +135,15 @@ async def _index_repo(
     # fetch current file tree from GitHub
     all_files = await get_repo_file_tree(github_org, repo, token)
 
-    # index each file (skip unchanged)
+    # filter to only supported file types — same as prototype's find_python_files()
+    # unsupported files (.md, .txt, pyproject.toml, etc.) are ignored, not counted as skipped
+    supported_files = [f for f in all_files if get_crawler(f["path"]) is not None]
+    ignored = len(all_files) - len(supported_files)
+
+    # index each supported file (skip unchanged)
     tasks = [
         _index_file(file, token, github_org, repo, checkpoint_shas, resource_code, github_org, project, tier)
-        for file in all_files
+        for file in supported_files
     ]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -148,7 +153,7 @@ async def _index_repo(
     for err in errors:
         log.error(json.dumps({"event": "file_index_failed", "error": str(err)}))
 
-    # save updated checkpoint with current SHAs for all files
+    # save updated checkpoint with current SHAs for all files (including unsupported)
     updated_index = {
         "resource_code": resource_code,
         "github_org":    github_org,
@@ -163,7 +168,8 @@ async def _index_repo(
         "event":     "repo_complete",
         "repo":      repo,
         "processed": len(processed),
-        "skipped":   len(all_files) - len(processed) - len(errors),
+        "skipped":   len(supported_files) - len(processed) - len(errors),
+        "ignored":   ignored,
         "errors":    len(errors),
     }))
 
