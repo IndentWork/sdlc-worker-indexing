@@ -72,7 +72,7 @@ async def ensure_index_exists() -> None:
             name=INDEX_NAME,
             fields=[
                 # key: encoded chunk_id — AI Search document identifier
-                SimpleField(name="key",           type=SearchFieldDataType.String, key=True),
+                SimpleField(name="doc_key",        type=SearchFieldDataType.String, key=True),
                 # chunk_id: original human-readable ID for filtering
                 SimpleField(name="chunk_id",      type=SearchFieldDataType.String, filterable=True),
                 SimpleField(name="resource_code", type=SearchFieldDataType.String, filterable=True),
@@ -111,8 +111,8 @@ async def upsert_chunk(chunk: dict) -> None:
     """
     credential = DefaultAzureCredential()
 
-    # set the encoded key from the original chunk_id
-    doc = {"key": encode_key(chunk["chunk_id"]), **chunk}
+    # set the encoded doc_key from the original chunk_id
+    doc = {"doc_key": encode_key(chunk["chunk_id"]), **chunk}
 
     async with SearchClient(_endpoint(), INDEX_NAME, credential) as client:
         await client.upload_documents(documents=[doc])
@@ -127,8 +127,8 @@ async def delete_chunks(chunk_ids: list[str]) -> None:
         return
 
     credential = DefaultAzureCredential()
-    # delete by encoded key
-    documents = [{"key": encode_key(cid)} for cid in chunk_ids]
+    # delete by encoded doc_key
+    documents = [{"doc_key": encode_key(cid)} for cid in chunk_ids]
 
     async with SearchClient(_endpoint(), INDEX_NAME, credential) as client:
         await client.delete_documents(documents=documents)
