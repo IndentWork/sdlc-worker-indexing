@@ -90,7 +90,9 @@ async def upsert_chunk(chunk: dict) -> None:
     credential = DefaultAzureCredential()
 
     async with SearchClient(_endpoint(), INDEX_NAME, credential) as client:
-        await client.upload_documents(documents=[chunk])
+        # allowUnsafeKeys=True allows chunk_id to contain ':' and '/' characters
+        # which are part of our naming convention: {resource_code}:{org}:{project}:...
+        await client.upload_documents(documents=[chunk], allowUnsafeKeys=True)
 
 
 async def delete_chunks(chunk_ids: list[str]) -> None:
