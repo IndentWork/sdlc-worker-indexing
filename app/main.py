@@ -36,7 +36,7 @@ from app.indexing.chunker import chunk_file
 from app.indexing.crawlers.registry import get_crawler, supported_extensions
 from app.indexing.graph_loader import load_edges, load_nodes
 from app.services.ai_search import ensure_index_exists
-from app.services.github import get_file_content, get_installation_token, get_repo_file_tree
+from app.services.github import get_file_content, get_installation_token, get_org_installation_id, get_repo_file_tree
 from app.services.keyvault import get_github_app_private_key
 from app.services.storage import (
     load_file_checkpoint,
@@ -173,9 +173,8 @@ async def _run_indexing_pipeline(payload: dict) -> None:
     Full indexing pipeline for one message.
     Reads sdlc.yml, gets GitHub token, indexes all repos in parallel.
     """
-    resource_code   = payload["resource_code"]
-    tier            = payload["tier"]
-    installation_id = payload.get("installation_id")
+    resource_code = payload["resource_code"]
+    tier          = payload["tier"]
 
     # read sdlc.yml from Storage
     from app.services.storage import load_file_checkpoint as _load
@@ -204,10 +203,11 @@ async def _run_indexing_pipeline(payload: dict) -> None:
         "repos":      repos,
     }))
 
-    # get GitHub App installation token
-    app_id      = os.environ["GITHUB_APP_ID"]
-    private_key = await get_github_app_private_key()
-    token       = await get_installation_token(installation_id, app_id, private_key)
+    # get GitHub App installation token — look up installation_id from org name
+    app_id          = os.environ["GITHUB_APP_ID"]
+    private_key     = await get_github_app_private_key()
+    installation_id = await get_org_installation_id(github_org, app_id, private_key)
+    token           = await get_installation_token(installation_id, app_id, private_key)
 
     # index all repos in parallel
     await asyncio.gather(*[

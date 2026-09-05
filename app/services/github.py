@@ -2,17 +2,20 @@
 GitHub service — all GitHub API interactions for the indexing worker.
 
 Functions:
-  _build_jwt()              — sign a JWT using the App private key
-  get_installation_token()  — exchange JWT for a short-lived installation token
-  get_repo_file_tree()      — fetch all file paths and SHAs in a repo
-  get_file_content()        — fetch raw content of a single file
+  _build_jwt()                  — sign a JWT using the App private key
+  get_org_installation_id()     — look up App installation ID from org name
+  get_installation_token()      — exchange JWT for a short-lived installation token
+  get_repo_file_tree()          — fetch all file paths and SHAs in a repo
+  get_file_content()            — fetch raw content of a single file
 
 Authentication flow:
   private_key (PEM from Key Vault)
       ↓
-  _build_jwt(app_id, private_key)   → JWT (valid 10 minutes)
+  _build_jwt(app_id, private_key)          → JWT (valid 10 minutes)
       ↓
-  get_installation_token(...)        → installation token (valid 1 hour)
+  get_org_installation_id(github_org, ...) → installation_id (looked up dynamically)
+      ↓
+  get_installation_token(installation_id)  → installation token (valid 1 hour)
       ↓
   get_repo_file_tree() / get_file_content()
 """
@@ -42,6 +45,28 @@ def _build_jwt(app_id: str, private_key: str) -> str:
         "iss": app_id,          # issuer = GitHub App ID
     }
     return pyjwt.encode(payload, private_key, algorithm="RS256")
+
+
+async def get_org_installation_id(github_org: str, app_id: str, private_key: str) -> str:
+    """
+    Look up the GitHub App installation ID for a given org.
+
+    Instead of storing the installation_id in the DB, we look it up dynamically
+    using the org name. This means no DB column or message field needed — the
+    org name is enough to find the correct installation.
+    """
+    jwt_token = _build_jwt(app_id, private_key)
+
+    url = f"{GITHUB_API}/orgs/{github_org}/installation"
+    headers = {
+        "Authorization": f"Bearer {jwt_token}",
+        "Accept":        "application/vnd.github+json",
+    }
+
+    async with httpx.AsyncClient() as client:
+        response = await client.get(url, headers=headers)
+        response.raise_for_status()
+        return str(response.json()["id"])
 
 
 async def get_installation_token(
