@@ -27,9 +27,12 @@ def _build_id(
 ) -> str:
     """
     Build a unique stable ID following the naming convention.
-    Example: b310545b:sdlc-tenant:ecommerce:cart-service:cart.py:add_to_cart
+    Cosmos DB IDs cannot contain '/' so we replace '/' with '__'.
+    ':' is allowed in Cosmos DB IDs.
+    Example: b310545b:sdlc-tenant:ecommerce:cart-service:cart__main.py:add_to_cart
     """
-    return ":".join([resource_code, github_org, project, repo, file_path] + list(parts))
+    safe_file = file_path.replace("/", "__")
+    return ":".join([resource_code, github_org, project, repo, safe_file] + list(parts))
 
 
 async def _upsert_file_node(
