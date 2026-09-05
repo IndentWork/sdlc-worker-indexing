@@ -191,16 +191,14 @@ async def _run_indexing_pipeline(payload: dict) -> None:
         stream  = await blob.download_blob()
         content = await stream.readall()
 
-    config = yaml.safe_load(content)
-    github_org = config.get("github_org", "")
-    project    = config.get("project", "")
-    repos      = config.get("repos", [])
+    config     = yaml.safe_load(content)
+    github_org = config.get("org", "")
+    projects   = config.get("projects", [])
 
     log.info(json.dumps({
         "event":      "pipeline_started",
         "github_org": github_org,
-        "project":    project,
-        "repos":      repos,
+        "projects":   [p["name"] for p in projects],
     }))
 
     # get GitHub App installation token — look up installation_id from org name
@@ -209,13 +207,16 @@ async def _run_indexing_pipeline(payload: dict) -> None:
     installation_id = await get_org_installation_id(github_org, app_id, private_key)
     token           = await get_installation_token(installation_id, app_id, private_key)
 
-    # index all repos in parallel
-    await asyncio.gather(*[
-        _index_repo(repo, github_org, project, token, resource_code, tier)
-        for repo in repos
-    ])
+    # build flat list of (project, repo) pairs and index all in parallel
+    repo_tasks = [
+        _index_repo(repo["name"], github_org, project["name"], token, resource_code, tier)
+        for project in projects
+        for repo in project.get("repos", [])
+    ]
 
-    log.info(json.dumps({"event": "pipeline_complete", "repos": len(repos)}))
+    await asyncio.gather(*repo_tasks)
+
+    log.info(json.dumps({"event": "pipeline_complete", "repos": len(repo_tasks)}))
 
 
 # ── Service Bus listener ──────────────────────────────────────────────────────
